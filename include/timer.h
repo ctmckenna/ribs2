@@ -22,8 +22,17 @@
 
 #include "ribs_defs.h"
 
-int ribs_timer(time_t msec, void (*handler)(int));
-int ribs_timer_create(void (*handler)(int));
-int ribs_timer_arm(int tfd, time_t msec);
+struct timer {
+    uint32_t entry_ofs;
+};
+
+#define TIMER_INIT_DEFAULTS .entry_ofs = UINT_MAX
+#define TIMER_INITIALIZER { TIMER_INIT_DEFAULTS }
+
+#define TIMER_ENT(ptr, type, member) \
+    ((type *)((char *)(ptr)-offsetof(type, member)))
+
+int ribs_timer_once(time_t msec, struct timer *timer, void (*handler)(struct timer *timer));
+int ribs_timer_remove(struct timer *timer);
 
 #endif // _TIMER__H_

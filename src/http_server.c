@@ -27,16 +27,24 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/uio.h>
-#include <sys/sendfile.h>
 #include "mime_types.h"
 #include "logger.h"
+#include "websocket_server.h"
+#include "websocket_log.h"
+
+#ifdef __APPLE__
+#include "apple.h"
+#else
+#include <sys/epoll.h>
+#include <sys/sendfile.h>
+#endif
+
 #define HTTP_DEF_STR(var,str)                   \
     const char var[]=str
 #include "http_defs.h"
@@ -57,6 +65,8 @@ SSTRL(HTTP_SERVER_NAME, "ribs2.0");
 SSTRL(CRLFCRLF, "\r\n\r\n");
 SSTRL(CRLF, "\r\n");
 SSTRL(CONNECTION, "\r\nConnection: ");
+SSTRL(UPGRADE, "\r\nUpgrade: ");
+SSTRL(UPGRADE_WEBSOCKET, "websocket");
 SSTRL(CONNECTION_CLOSE, "close");
 SSTRL(CONNECTION_KEEPALIVE, "Keep-Alive");
 SSTRL(CONTENT_LENGTH, "\r\nContent-Length: ");
@@ -66,35 +76,7 @@ SSTRL(COOKIE_VERSION, "Version=\"1\"");
 SSTRL(HTTP_STATUS_100, "100 Continue");
 SSTRL(EXPECT_100, "\r\nExpect: 100");
 
-static void http_server_process_request(char *uri, char *headers);
-static void http_server_accept_connections(void);
-
-static void http_server_fiber_main_wrapper(void) {
-    http_server_fiber_main();
-    struct http_server_context *ctx = http_server_get_context();
-    ctx_pool_put(&ctx->server->ctx_pool, current_ctx);
-}
-
-static void http_server_idle_handler(void) {
-    struct http_server **server_ref = (struct http_server **)current_ctx->reserved;
-    struct http_server *server = *server_ref;
-    for (;;) {
-        if (last_epollev.events == EPOLLOUT)
-            yield();
-        else {
-            struct ribs_context *new_ctx = ctx_pool_get(&server->ctx_pool);
-            ribs_makecontext(new_ctx, event_loop_ctx, http_server_fiber_main_wrapper);
-            int fd = last_epollev.data.fd;
-            struct epoll_worker_fd_data *fd_data = epoll_worker_fd_map + fd;
-            fd_data->ctx = new_ctx;
-            struct http_server_context *ctx = (struct http_server_context *)new_ctx->reserved;
-            ctx->fd = fd;
-            ctx->server = server;
-            TIMEOUT_HANDLER_REMOVE_FD_DATA(fd_data);
-            ribs_swapcurcontext(new_ctx);
-        }
-    }
-}
+static int http_server_process_request(char *method, char *version, char *uri, char *headers);
 
 int http_server_init(struct http_server *server) {
     /*
@@ -104,95 +86,31 @@ int http_server_init(struct http_server *server) {
         return LOGGER_ERROR("failed to initialize mime types"), -1;
     if (0 > http_headers_init())
         return LOGGER_ERROR("failed to initialize http headers"), -1;
-    /*
-     * idle connection handler
-     */
-    server->idle_ctx = ribs_context_create(SMALL_STACK_SIZE, sizeof(struct http_server *), http_server_idle_handler);
-    struct http_server **server_ref = (struct http_server **)server->idle_ctx->reserved;
-    *server_ref = server;
-    /*
-     * context pool
-     */
-    if (0 == server->num_stacks)
-        server->num_stacks = DEFAULT_NUM_STACKS;
-    if (0 == server->stack_size) {
-        struct rlimit rlim;
-        if (0 > getrlimit(RLIMIT_STACK, &rlim))
-            return LOGGER_PERROR("getrlimit(RLIMIT_STACK)"), -1;
-        server->stack_size = rlim.rlim_cur;
-    }
-    LOGGER_INFO("http server pool: initial=%zu, grow=%zu, stack_size=%zu", server->num_stacks, server->num_stacks, server->stack_size);
-    ctx_pool_init(&server->ctx_pool, server->num_stacks, server->num_stacks, server->stack_size, sizeof(struct http_server_context) + server->context_size);
-    /*
-     * listen socket
-     */
-    const int LISTEN_BACKLOG = 32768;
-    LOGGER_INFO("listening on port: %d, backlog: %d", server->port, LISTEN_BACKLOG);
-    int lfd = socket(PF_INET, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
-    if (0 > lfd)
-        return -1;
-
-    int rc;
-    const int option = 1;
-    rc = setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
-    if (0 > rc)
-        return LOGGER_PERROR("setsockopt, SO_REUSEADDR"), rc;
-
-    rc = setsockopt(lfd, IPPROTO_TCP, TCP_NODELAY, &option, sizeof(option));
-    if (0 > rc)
-        return LOGGER_PERROR("setsockopt, TCP_NODELAY"), rc;
-
-    struct linger ls;
-    ls.l_onoff = 0;
-    ls.l_linger = 0;
-    rc = setsockopt(lfd, SOL_SOCKET, SO_LINGER, (void *)&ls, sizeof(ls));
-    if (0 > rc)
-        return LOGGER_PERROR("setsockopt, SO_LINGER"), rc;
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(struct sockaddr_in));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(server->port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-    if (0 > bind(lfd, (struct sockaddr *)&addr, sizeof(addr)))
-        return LOGGER_PERROR("bind"), -1;
-
-    if (0 > listen(lfd, LISTEN_BACKLOG))
-        return LOGGER_PERROR("listen"), -1;
-
-    server->accept_ctx = ribs_context_create(ACCEPTOR_STACK_SIZE, sizeof(struct http_server *), http_server_accept_connections);
-    server->fd = lfd;
-    server_ref = (struct http_server **)server->accept_ctx->reserved;
-    *server_ref = server;
 
     if (server->max_req_size == 0)
         server->max_req_size = DEFAULT_MAX_REQ_SIZE;
+
+    server->tcp.user_func = http_server_fiber_main;
+    server->tcp.parent_server = server;
+
+    size_t context_size = server->context_size;
+    if (server->websocket != NULL) {
+        context_size += server->websocket->context_size;
+        context_size += sizeof(struct http_server_context) + sizeof(struct websocket_server_context);
+        server->tcp.conn_data_size = sizeof(struct websocket_server_connection_data);
+        server->tcp.conn_data_init = websocket_init_conn_data;
+        websocket_server_init(server->websocket);
+    } else
+        context_size += sizeof(struct http_server_context);
+    server->tcp.context_size = context_size;
+
+    if (0 > tcp_server_init(&server->tcp))
+        return -1;
     return 0;
 }
 
 int http_server_init_acceptor(struct http_server *server) {
-    if (0 > ribs_epoll_add(server->fd, EPOLLIN, server->accept_ctx))
-        return -1;
-    return timeout_handler_init(&server->timeout_handler);
-}
-
-static void http_server_accept_connections(void) {
-    struct http_server **server_ref = (struct http_server **)current_ctx->reserved;
-    struct http_server *server = *server_ref;
-    for (;; yield()) {
-        struct sockaddr_in new_addr;
-        socklen_t new_addr_size = sizeof(struct sockaddr_in);
-        int fd = accept4(server->fd, (struct sockaddr *)&new_addr, &new_addr_size, SOCK_CLOEXEC | SOCK_NONBLOCK);
-        if (0 > fd)
-            continue;
-
-        if (0 > ribs_epoll_add(fd, EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP, server->idle_ctx)) {
-            close(fd);
-            continue;
-        }
-
-        timeout_handler_add_fd_data(&server->timeout_handler, epoll_worker_fd_map + fd);
-    }
+    return tcp_server_init_acceptor(&server->tcp);
 }
 
 static int check_persistent(char *p) {
@@ -210,7 +128,6 @@ static int check_persistent(char *p) {
     else
         return 0;
 }
-
 
 void http_server_header_start(const char *status, const char *content_type) {
     struct http_server_context *ctx = http_server_get_context();
@@ -281,73 +198,38 @@ void http_server_header_content_length(void) {
     vmbuf_sprintf(&ctx->header, "%s%zu", CONTENT_LENGTH, vmbuf_wlocpos(&ctx->payload));
 }
 
-#define READ_FROM_SOCKET()                                              \
-    res = vmbuf_read(&ctx->request, fd);                                \
-    if (0 >= res) {                                                     \
-        close(fd); /* remote side closed or other error occured */      \
-        return;                                                         \
-    }                                                                   \
-    if (vmbuf_wlocpos(&ctx->request) > max_req_size) {                  \
-        ctx->persistent = 0;                                            \
-        http_server_response(HTTP_STATUS_413, HTTP_CONTENT_TYPE_TEXT_PLAIN); \
-        http_server_write();                                            \
-        close(fd);                                                      \
-        return;                                                         \
-    }
-
-
-static inline void http_server_yield(void) {
+static inline void http_server_write(void) {
     struct http_server_context *ctx = http_server_get_context();
-    struct epoll_worker_fd_data *fd_data = epoll_worker_fd_map + ctx->fd;
-    timeout_handler_add_fd_data(&ctx->server->timeout_handler, fd_data);
-    yield();
-    TIMEOUT_HANDLER_REMOVE_FD_DATA(fd_data);
+    struct vmbuf *tosend[2];
+    tosend[0] = &ctx->header;
+    tosend[1] = &ctx->payload;
+    if (0 > tcp_server_write(tosend, 2))
+        ctx->persistent = 0;
 }
 
-inline void http_server_write(void) {
+static inline int http_server_handle_req_limit(size_t max_req_size) {
     struct http_server_context *ctx = http_server_get_context();
-    struct iovec iovec[2] = {
-        { vmbuf_data(&ctx->header), vmbuf_wlocpos(&ctx->header)},
-        { vmbuf_data(&ctx->payload), vmbuf_wlocpos(&ctx->payload)}
-    };
-    int fd = ctx->fd;
-
-    ssize_t num_write;
-    for (;;http_server_yield()) {
-        num_write = writev(fd, iovec, iovec[1].iov_len ? 2 : 1);
-        if (0 > num_write) {
-            if (EAGAIN == errno) {
-                continue;
-            } else {
-                ctx->persistent = 0;
-                return;
-            }
-        } else {
-            if (num_write >= (ssize_t)iovec[0].iov_len) {
-                num_write -= iovec[0].iov_len;
-                iovec[0].iov_len = iovec[1].iov_len - num_write;
-                if (iovec[0].iov_len == 0)
-                    break;
-                iovec[0].iov_base = iovec[1].iov_base + num_write;
-                iovec[1].iov_len = 0;
-            } else {
-                iovec[0].iov_len -= num_write;
-                iovec[0].iov_base += num_write;
-            }
-        }
+    if (vmbuf_wlocpos(&ctx->request) > max_req_size) {
+        http_server_response(HTTP_STATUS_413, HTTP_CONTENT_TYPE_TEXT_PLAIN);
+        http_server_write();
+        tcp_server_close_connection();
+        return 1;
     }
+    return 0;
 }
 
 void http_server_fiber_main(void) {
     struct http_server_context *ctx = http_server_get_context();
+    ctx->tcp_ctx = tcp_server_get_context();
+    ctx->server = ctx->tcp_ctx->server->parent_server;
+
     struct http_server *server = ctx->server;
-    int fd = ctx->fd;
 
     char *URI;
+    char *version;
     char *headers;
     char *content;
     size_t content_length;
-    int res;
     ctx->persistent = 0;
 
     vmbuf_init(&ctx->request, server->init_request_size);
@@ -355,8 +237,11 @@ void http_server_fiber_main(void) {
     vmbuf_init(&ctx->payload, server->init_payload_size);
     size_t max_req_size = server->max_req_size;
 
-    for (;; http_server_yield()) {
-        READ_FROM_SOCKET();
+    for (;; tcp_server_yield()) {
+        if (0 > tcp_server_read(&ctx->request))
+            return;
+        if (http_server_handle_req_limit(max_req_size))
+            return;
         if (vmbuf_wlocpos(&ctx->request) > MIN_HTTP_REQ_SIZE)
             break;
     }
@@ -364,8 +249,11 @@ void http_server_fiber_main(void) {
         if (0 == SSTRNCMP(GET, vmbuf_data(&ctx->request)) || 0 == SSTRNCMP(HEAD, vmbuf_data(&ctx->request))) {
             /* GET or HEAD */
             while (0 != SSTRNCMP(CRLFCRLF,  vmbuf_wloc(&ctx->request) - SSTRLEN(CRLFCRLF))) {
-                http_server_yield();
-                READ_FROM_SOCKET();
+                tcp_server_yield();
+                if (0 > tcp_server_read(&ctx->request))
+                    return;
+                if (http_server_handle_req_limit(max_req_size))
+                    return;
             }
             /* make sure the string is \0 terminated */
             /* this will overwrite the first CR */
@@ -381,13 +269,16 @@ void http_server_fiber_main(void) {
                 headers += SSTRLEN(CRLF); /* skip the new line */
             *p = 0;
             p = strchrnul(URI, ' '); /* truncate the version part */
+            version = p;
+            if (0 != *version)
+                ++version;
             *p = 0; /* \0 at the end of URI */
-
             ctx->content = NULL;
             ctx->content_len = 0;
 
-            /* minimal parsing and call user function */
-            http_server_process_request(URI, headers);
+            /* minimal parsing and call user function - return if switching context to new server */
+            if (1 == http_server_process_request(vmbuf_data(&ctx->request), version, URI, headers))
+                return;
         } else if (0 == SSTRNCMP(POST, vmbuf_data(&ctx->request)) || 0 == SSTRNCMP(PUT, vmbuf_data(&ctx->request))) {
             /* POST or PUT */
             for (;;) {
@@ -395,8 +286,11 @@ void http_server_fiber_main(void) {
                 /* wait until we have the header */
                 if (NULL != (content = strstr(vmbuf_data(&ctx->request), CRLFCRLF)))
                     break;
-                http_server_yield();
-                READ_FROM_SOCKET();
+                tcp_server_yield();
+                if (0 > tcp_server_read(&ctx->request))
+                    return;
+                if (http_server_handle_req_limit(max_req_size))
+                    return;
             }
             *content = 0; /* terminate at the first CR like in GET */
             content += SSTRLEN(CRLFCRLF);
@@ -404,8 +298,8 @@ void http_server_fiber_main(void) {
 
             if (strstr(vmbuf_data(&ctx->request), EXPECT_100)) {
                 vmbuf_sprintf(&ctx->header, "%s %s\r\n\r\n", HTTP_SERVER_VER, HTTP_STATUS_100);
-                if (0 > vmbuf_write(&ctx->header, fd)) {
-                    close(fd);
+                if (0 > vmbuf_write(&ctx->header, ctx->tcp_ctx->fd)) {
+                    tcp_server_close_connection();
                     return;
                 }
                 vmbuf_reset(&ctx->header);
@@ -424,8 +318,11 @@ void http_server_fiber_main(void) {
             for (;;) {
                 if (content_ofs + content_length <= vmbuf_wlocpos(&ctx->request))
                     break;
-                http_server_yield();
-                READ_FROM_SOCKET();
+                tcp_server_yield();
+                if (0 > tcp_server_read(&ctx->request))
+                    return;
+                if (http_server_handle_req_limit(max_req_size))
+                    return;
             }
             p = vmbuf_data(&ctx->request);
             URI = strchrnul(p, ' '); /* can't be NULL PUT and POST constants have space at the end */
@@ -437,13 +334,17 @@ void http_server_fiber_main(void) {
                 headers += SSTRLEN(CRLF); /* skip the new line */
             *p = 0;
             p = strchrnul(URI, ' '); /* truncate http version */
+            version = p;
+            if (0 != *version)
+                ++version;
             *p = 0; /* \0 at the end of URI */
             ctx->content = vmbuf_data_ofs(&ctx->request, content_ofs);
             *(ctx->content + content_length) = 0;
             ctx->content_len = content_length;
 
             /* minimal parsing and call user function */
-            http_server_process_request(URI, headers);
+            if (1 == http_server_process_request(vmbuf_data(&ctx->request), version, URI, headers))
+                return;
         } else {
             http_server_response(HTTP_STATUS_501, HTTP_CONTENT_TYPE_TEXT_PLAIN);
             break;
@@ -451,19 +352,17 @@ void http_server_fiber_main(void) {
     } while(0);
 
     if (vmbuf_wlocpos(&ctx->header) > 0) {
-        epoll_worker_resume_events(fd);
+        epoll_worker_resume_events(ctx->tcp_ctx->fd);
         http_server_write();
     }
 
-    if (ctx->persistent) {
-        struct epoll_worker_fd_data *fd_data = epoll_worker_fd_map + fd;
-        fd_data->ctx = server->idle_ctx;
-        timeout_handler_add_fd_data(&server->timeout_handler, fd_data);
-    } else
-        close(fd);
+    if (ctx->persistent)
+        tcp_server_idle_connection();
+    else
+        tcp_server_close_connection();
 }
 
-static void http_server_process_request(char *uri, char *headers) {
+static int http_server_process_request(char *method, char *version, char *uri, char *headers) {
     struct http_server_context *ctx = http_server_get_context();
     ctx->headers = headers;
     char *query = strchrnul(uri, '?');
@@ -476,8 +375,15 @@ static void http_server_process_request(char *uri, char *headers) {
         uri = strchrnul(uri, '/');
     }
     ctx->uri = uri;
-    epoll_worker_ignore_events(ctx->fd);
+    if (ctx->server->websocket != NULL) {
+        const char *upgrade = strstr(headers, UPGRADE + 2); //headers may not include \r\n
+        if (upgrade != NULL && 0 == SSTRNCMPI(UPGRADE_WEBSOCKET, upgrade + SSTRLEN(UPGRADE) - 2)) {
+            return websocket_server_handshake(method, version);
+        }
+    }
+    epoll_worker_ignore_events(ctx->tcp_ctx->fd);
     ctx->server->user_func();
+    return 0;
 }
 
 int http_server_sendfile(const char *filename) {
@@ -508,7 +414,7 @@ int http_server_sendfile2(const char *filename, const char *additional_headers, 
         http_server_header_start(HTTP_STATUS_200, mime_types_by_ext(ext));
     else
         http_server_header_start(HTTP_STATUS_200, mime_types_by_filename(filename));
-    vmbuf_sprintf(&ctx->header, "%s%lu", CONTENT_LENGTH, st.st_size);
+    vmbuf_sprintf(&ctx->header, "%s%lu", CONTENT_LENGTH, (uint64_t)st.st_size);
     if (additional_headers)
         vmbuf_strcpy(&ctx->header, additional_headers);
 
@@ -522,15 +428,15 @@ int http_server_sendfile2(const char *filename, const char *additional_headers, 
 
 int http_server_sendfile_payload(int ffd, off_t size) {
     struct http_server_context *ctx = http_server_get_context();
-    int fd = ctx->fd;
+    int fd = ctx->tcp_ctx->fd;
     int option = 1;
     if (0 > setsockopt(fd, IPPROTO_TCP, TCP_CORK, &option, sizeof(option)))
         LOGGER_PERROR("TCP_CORK set");
-    epoll_worker_resume_events(ctx->fd);
+    epoll_worker_resume_events(ctx->tcp_ctx->fd);
     http_server_write();
     vmbuf_reset(&ctx->header);
     off_t ofs = 0;
-    for (;;http_server_yield()) {
+    for (;;tcp_server_yield()) {
         if (0 > sendfile(fd, ffd, &ofs, size - ofs) && EAGAIN != errno)
             return ctx->persistent = 0, -1;
         if (ofs >= size) break;
@@ -576,18 +482,17 @@ int http_server_generate_dir_list(const char *URI) {
             if (t)
                 vmbuf_strftime(payload, "%F %T", t);
             vmbuf_strcpy(payload, "</td>");
-            vmbuf_sprintf(payload, "<td>%lu</td>", st.st_size);
+            vmbuf_sprintf(payload, "<td>%lu</td>", (uint64_t)st.st_size);
             vmbuf_strcpy(payload, "</tr>");
         }
         closedir(d);
     }
     vmbuf_strcpy(payload, "<tr><td colspan=3><hr></td></tr></table>");
-    vmbuf_sprintf(payload, "<address>RIBS 2.0 Port %hu</address></body>", ctx->server->port);
+    vmbuf_sprintf(payload, "<address>RIBS 2.0 Port %hu</address></body>", ctx->server->tcp.port);
     vmbuf_strcpy(payload, "</html>");
     return error;
 }
 
-
 void http_server_close(struct http_server *server) {
-    close(server->fd);
+    close(server->tcp.fd);
 }

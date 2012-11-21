@@ -33,6 +33,7 @@
 #include "http_server.h"
 #include "http_file_server.h"
 #include "http_vhost.h"
+#include "web_server.h"
 #include "http_defs.h"
 #include "http_client_pool.h"
 #include "http_headers.h"
@@ -48,5 +49,6 @@
 #include "malloc.h"
 #include "timer.h"
 #include "base64.h"
+#include "websocket_server.h"
 
 #endif // _RIBS__H_

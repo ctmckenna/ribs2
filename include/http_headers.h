@@ -37,6 +37,9 @@ struct http_headers{
     char *if_none_match;
     char *accept_language;
     char *origin;
+    char *connection;
+    char *sec_websocket_key;
+    char *sec_websocket_version;
     uint8_t accept_encoding_mask;
     char peer_ip_addr[INET_ADDRSTRLEN];
 };

@@ -20,11 +20,19 @@
 #include "ringfile.h"
 #include "file_utils.h"
 #include "logger.h"
-#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include "vm_misc.h"
+#ifdef __APPLE__
+#include "apple.h"
+#else
+#include <sys/mman.h>
+#endif
+
+#ifdef __APPLE__
+#include "apple.h"
+#endif
 
 int ringfile_init(struct ringfile *rb, const char *filename, size_t size, size_t reserved) {
     reserved = RIBS_VM_ALIGN(reserved + sizeof(struct ringfile_header));

@@ -1,12 +1,15 @@
 /*
-    This file is part of RIBS2.0 (Robust Infrastructure for Backend Systems).
-    RIBS is an infrastructure for building great SaaS applications (but not
+    This file is part of RIBS2.0 (Robust Infrastructure for Backend
+Systems).
+    RIBS is an infrastructure for building great SaaS applications
+(but not
     limited to).
 
     Copyright (C) 2012,2013 Adap.tv, Inc.
 
     RIBS is free software: you can redistribute it and/or modify
-    it under the terms of the GNU Lesser General Public License as published by
+    it under the terms of the GNU Lesser General Public License as
+published by
     the Free Software Foundation, version 2.1 of the License.
 
     RIBS is distributed in the hope that it will be useful,
@@ -14,12 +17,22 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU Lesser General Public License for more details.
 
-    You should have received a copy of the GNU Lesser General Public License
+    You should have received a copy of the GNU Lesser General Public
+License
     along with RIBS.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "json.h"
 
-inline void json_stack_item_set(struct json_stack_item *si, char *b, char *e)
+struct json_cb_stack_item
+{
+    void (*callback_string) (struct json *json, char *kb, char *ke, char *vb, char *ve);
+    void (*callback_primitive) (struct json *json, char *kb, char *ke, char *vb, char *ve);
+    void (*callback_block_begin) (struct json *json, char *kb, char *ke);
+    void (*callback_block_end) (struct json *json, char *kb, char *ke);
+};
+
+inline void json_stack_item_set(struct json_stack_item *si, char *b,
+char *e)
 {
     si->begin = b;
     si->end = e;
@@ -35,7 +48,8 @@ inline int json_stack_item_isset(struct json_stack_item *si)
     return si->begin != si->end;
 }
 
-void null_callback(struct json *js, char *kb, char *ke, char *vb, char *ve)
+void null_callback(struct json *js, char *kb, char *ke, char *vb, char
+*ve)
 {
     (void)js; (void)kb; (void)ke; (void)vb; (void)ve;
 }
@@ -55,11 +69,56 @@ inline void json_reset_callbacks(struct json *js)
 inline int json_init(struct json *js)
 {
     json_reset_callbacks(js);
-    if (0 > vmbuf_init(&js->stack, 4096)) {
+    if (0 > vmbuf_init(&js->stack, 4096) ||
+        0 > vmbuf_init(&js->cb_stack, 4096)) {
         js->err = "init";
         return -1;
     }
     return 0;
+}
+
+void json_push_callbacks(struct json *js)
+{
+    struct json_cb_stack_item cb_item;
+    cb_item.callback_string = js->callback_string;
+    cb_item.callback_primitive = js->callback_primitive;
+    cb_item.callback_block_begin = js->callback_block_begin;
+    cb_item.callback_block_end = js->callback_block_end;
+    vmbuf_memcpy(&js->cb_stack, &cb_item, sizeof(cb_item));
+}
+
+void json_pop_callbacks(struct json *js)
+{
+    if (vmbuf_wlocpos(&js->cb_stack) == 0)
+        json_reset_callbacks(js);
+    else {
+        vmbuf_wrewind(&js->cb_stack, sizeof(struct json_cb_stack_item));
+        struct json_cb_stack_item *cb_item = (struct json_cb_stack_item *)vmbuf_wloc(&js->cb_stack);
+        js->callback_string = cb_item->callback_string;
+        js->callback_primitive = cb_item->callback_primitive;
+        js->callback_block_begin = cb_item->callback_block_begin;
+        js->callback_block_end = cb_item->callback_block_end;
+    }
+}
+
+static void null_obj_callback_block_begin(struct json *js, char *kb, char *ke)
+{
+    (void)kb; (void)ke;
+    json_push_callbacks(js);
+}
+
+static void null_obj_callback_block_end(struct json *js, char *kb, char *ke)
+{
+    (void)kb; (void)ke;
+    json_pop_callbacks(js);
+}
+
+void json_null_obj_parse(struct json *js)
+{
+    json_push_callbacks(js);
+    json_reset_callbacks(js);
+    js->callback_block_begin = null_obj_callback_block_begin;
+    js->callback_block_end = null_obj_callback_block_end;
 }
 
 int json_parse_string(struct json *js)
@@ -81,7 +140,8 @@ int json_parse_string(struct json *js)
     }
     json_stack_item_set(&js->last_string, start, js->cur);
 
-    (*js->callback_string)(js, js->last_key.begin, js->last_key.end, start, js->cur);
+    (*js->callback_string)(js, js->last_key.begin, js->last_key.end,
+start, js->cur);
     ++js->cur; // skip the ending \"
     return 0;
 }
@@ -100,7 +160,8 @@ int json_parse_primitive(struct json *js)
         case '\n':
         case ' ':
         case ',':
-            (*js->callback_primitive)(js, js->last_key.begin, js->last_key.end, start, js->cur);
+            (*js->callback_primitive)(js, js->last_key.begin,
+js->last_key.end, start, js->cur);
             json_stack_item_set(&js->last_string, start, js->cur);
             return 0;
         }
@@ -121,9 +182,11 @@ inline int json_parse(struct json *js, char *str)
         {
         case '{':
         case '[':
-            (*js->callback_block_begin)(js, js->last_string.begin, js->last_string.end);
+            (*js->callback_block_begin)(js, js->last_string.begin,
+js->last_string.end);
             json_stack_item_reset(&js->last_key);
-            vmbuf_memcpy(&js->stack, &js->last_string, sizeof(struct json_stack_item));
+            vmbuf_memcpy(&js->stack, &js->last_string, sizeof(struct
+json_stack_item));
             json_stack_item_reset(&js->last_string);
             ++js->level;
             break;
@@ -135,8 +198,10 @@ inline int json_parse(struct json *js, char *str)
             }
             json_stack_item_reset(&js->last_key);
             vmbuf_wrewind(&js->stack, sizeof(struct json_stack_item));
-            js->last_string = *(struct json_stack_item *)vmbuf_wloc(&js->stack);
-            (*js->callback_block_end)(js, js->last_string.begin, js->last_string.end);
+            js->last_string = *(struct json_stack_item
+*)vmbuf_wloc(&js->stack);
+            (*js->callback_block_end)(js, js->last_string.begin,
+js->last_string.end);
             --js->level;
             break;
         case '\"':

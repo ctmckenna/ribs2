@@ -88,21 +88,23 @@ int main(int argc, char *argv[]) {
 
     /* server config */
     struct http_server server = {
-        /* port number */
-        .port = port,
+        .tcp = {
+            /* port number */
+            .port = port,
+
+            /* set idle connection timeout to 60 seconds */
+            .timeout_handler.timeout = 60000,
+
+            /* set fiber's stack size to 64K */
+            .stack_size = 64*1024,
+
+            /* start the server with 100 stacks */
+            /* more stacks will be created if necessary */
+            .num_stacks = 100
+        },
 
         /* call simple_file_server upon receiving http request */
         .user_func = simple_file_server,
-
-        /* set idle connection timeout to 60 seconds */
-        .timeout_handler.timeout = 60000,
-
-        /* set fiber's stack size to 64K */
-        .stack_size = 64*1024,
-
-        /* start the server with 100 stacks */
-        /* more stacks will be created if necessary */
-        .num_stacks =  100,
 
         /* we expect most of our requests to be less than 8K */
         .init_request_size = 8192,

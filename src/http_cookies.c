@@ -19,6 +19,10 @@
 */
 #include "http_cookies.h"
 
+#ifdef __APPLE__
+#include "apple.h"
+#endif
+
 static inline void add_cookie(struct hashtable *ht, const char *str) {
     const char *name = str;
     const char *name_end = strchrnul(str, '=');
@@ -36,7 +40,7 @@ static inline void add_cookie(struct hashtable *ht, const char *str) {
     *(char *)(hashtable_get_val(ht, loc) + l) = 0;
 }
 
-int http_parse_cookies(struct hashtable *ht, char *cookies_str) {
+int http_cookies_parse(char *cookies_str, struct hashtable *ht) {
 
     char *p = cookies_str, *s = p;
     char c;

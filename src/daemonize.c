@@ -26,10 +26,13 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/prctl.h>
-#include <sys/signalfd.h>
-
 #include "logger.h"
+
+#ifdef __APPLE__
+#include "apple.h"
+#else
+#include <sys/signalfd.h>
+#endif
 
 static const char *pidfile = NULL;
 static int child_is_up_pipe[2] = { -1, -1 };
@@ -41,6 +44,8 @@ static int sigfd = -1;
 static struct ribs_context *sigfd_ctx = NULL;
 static struct hashtable ht_pid_to_ctx = HASHTABLE_INITIALIZER;
 static siginfo_t last_sig_info;
+static int pdeath_sig_pipe[2] = { -1, -1 };
+static struct ribs_context *parent_death_ctx = NULL;
 
 #define SIG_CHLD_STACK_SIZE 128*1024
 
@@ -128,7 +133,7 @@ static void _handle_sig_child(void) {
             epoll_worker_ignore_events(sigfd);
             for (;;) {
                 last_sig_info.si_pid = 0;
-                if (0 > waitid(P_ALL, 0, &last_sig_info, WEXITED | WNOHANG) && ECHILD != errno) {
+                if (0 > waitid(P_ALL, 0, &last_sig_info, WEXITED | WNOHANG && ECHILD != errno)) {
                     LOGGER_PERROR("waitid");
                     break;
                 }
@@ -176,6 +181,12 @@ static void _handle_sig_child(void) {
     }
 }
 
+static void _handle_pdeath(void) {
+    pid_t pid = getpid();
+    kill(pid, SIGTERM);
+    close(*(int *)current_ctx->reserved);
+}
+
 static void signal_handler(int signum) {
     switch(signum) {
     case SIGINT:
@@ -219,25 +230,29 @@ static int _init_subprocesses(const char *pidfilename, int num_forks) {
             exit(EXIT_FAILURE);
     }
     LOGGER_INFO("num forks = %d", num_forks);
+    LOGGER_INFO("parent pid: [%u]", getpid());
     num_instances = num_forks;
     daemon_instance = 0;
     children_pids = calloc(num_forks - 1, sizeof(pid_t));
+    if (0 > pipe2(pdeath_sig_pipe, O_NONBLOCK | O_CLOEXEC)) return LOGGER_PERROR("pipe"), -1;
     int i;
     for (i = 1; i < num_forks; ++i) {
         LOGGER_INFO("starting sub-process %d", i);
         pid_t pid = fork();
         if (0 > pid) return LOGGER_PERROR("fork"), -1;
         if (0 == pid) {
+            close(pdeath_sig_pipe[1]); //close write end
+            pdeath_sig_pipe[1] = -1;
             daemon_instance = i;
-            if (0 > prctl(PR_SET_PDEATHSIG, SIGTERM))
-                return LOGGER_PERROR("prctl"), -1;
             if (0 > _set_signals())
                 return LOGGER_ERROR("failed to set signals"), -1;
-            LOGGER_INFO("sub-process %d started", i);
+            LOGGER_INFO("sub-process %d started [%u]", i, getpid());
             return 0;
         } else
             children_pids[i-1] = pid;
     }
+    close(pdeath_sig_pipe[0]); //close read end
+    pdeath_sig_pipe[0] = -1;
     if (pidfilename && 0 > _set_pidfile(pidfilename))
         return LOGGER_ERROR("failed to set pidfile"), -1;
     if (0 > _set_signals())
@@ -317,7 +332,12 @@ int ribs_server_signal_children(int sig) {
 
 void ribs_server_start(void) {
     daemon_finalize();
-    if (0 <= sigfd && 0 > ribs_epoll_add(sigfd, EPOLLIN, sigfd_ctx))
+    if (0 <= pdeath_sig_pipe[0]) {
+        if (NULL == (parent_death_ctx = small_ctx_for_fd(pdeath_sig_pipe[0], sizeof(int), _handle_pdeath)))
+            return LOGGER_ERROR("small_ctx_for_fd: parent_death_ctx");
+        *(int *)parent_death_ctx->reserved = pdeath_sig_pipe[0];
+    }
+    if (0 <= sigfd && 0 > ribs_epoll_add_signal(sigfd, EPOLLIN, sigfd_ctx))
         return LOGGER_ERROR("ribs_epoll_add: sigfd");
     epoll_worker_loop();
     if (0 >= num_instances || 0 != daemon_instance)

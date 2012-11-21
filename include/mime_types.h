@@ -21,6 +21,7 @@
 #define _MIME_TYPES__H_
 
 #include "ribs_defs.h"
+#include "sstr.h"
 
 #define DEFAULT_MIME_TYPE "text/plain"
 

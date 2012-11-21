@@ -27,6 +27,10 @@
 #include <stdio.h>
 #include <limits.h>
 
+#ifdef __APPLE__
+#include "apple.h"
+#endif
+
 int _mkdir_recursive(char *file) {
     char *cur = file;
     while (*cur) {

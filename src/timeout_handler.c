@@ -21,29 +21,32 @@
 #include <sys/socket.h>
 
 static void expiration_handler(void) {
-    uint64_t num_exp;
     struct timeout_handler **ref = (struct timeout_handler **)current_ctx->reserved;
     struct timeout_handler *timeout_handler = *ref;
     struct timeval when = {timeout_handler->timeout/1000,(timeout_handler->timeout%1000)*1000};
     int fd = timeout_handler->fd;
     for (;;yield()) {
+        #ifndef __APPLE__
+        uint64_t num_exp;
         if (sizeof(num_exp) != read(fd, &num_exp, sizeof(num_exp)))
             continue;
+        #endif
         struct timeval now, ts;
         gettimeofday(&now, NULL);
         timersub(&now, &when, &ts);
         struct list *fd_data_list;
         int arm_timer = !list_empty(&timeout_handler->timeout_chain);
         LIST_FOR_EACH(&timeout_handler->timeout_chain, fd_data_list) {
-            struct epoll_worker_fd_data *fd_data = LIST_ENTRY(fd_data_list, struct epoll_worker_fd_data, timeout_chain);
+            struct epoll_worker_fd_data *fd_data = LIST_ENT(fd_data_list, struct epoll_worker_fd_data, timeout_chain);
             if (timercmp(&fd_data->timestamp, &ts, >)) {
                 timersub(&fd_data->timestamp, &ts, &now);
                 struct itimerspec whence = {{0,0},{now.tv_sec,now.tv_usec*1000}};
-                if (0 > timerfd_settime(timeout_handler->fd, 0, &whence, NULL))
+                if (0 > timerfd_settime(fd, 0, &whence, NULL))
                     LOGGER_PERROR("timerfd_settime");
                 arm_timer = 0;
                 break;
             }
+            LOGGER_INFO("shutdown %d", fd_data - epoll_worker_fd_map);
             if (0 > shutdown(fd_data - epoll_worker_fd_map, SHUT_RDWR))
                 LOGGER_PERROR("shutdown");
         }
@@ -63,7 +66,7 @@ int timeout_handler_init(struct timeout_handler *timeout_handler) {
     int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (0 > tfd)
         return LOGGER_PERROR("timerfd_create"), -1;
-    timeout_handler->timeout_handler_ctx = small_ctx_for_fd(tfd, sizeof(struct timeout_handler *), expiration_handler);
+    timeout_handler->timeout_handler_ctx = small_ctx_for_timer(tfd, sizeof(struct timeout_handler *), expiration_handler);
     timeout_handler->fd = tfd;
     struct timeout_handler **ref = (struct timeout_handler **)timeout_handler->timeout_handler_ctx->reserved;
     *ref = timeout_handler;

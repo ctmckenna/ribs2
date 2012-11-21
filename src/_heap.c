@@ -76,6 +76,12 @@ _RIBS_INLINE_ void heap_remove(struct heap *h, uint32_t loc) {
     return heap_remove_item(h, _HEAP_DATA(loc)->key);
 }
 
+_RIBS_INLINE_ int heap_is_top(struct heap *h, uint32_t loc) {
+    void *data = vmbuf_data(&h->data);
+    uint32_t el_size = h->el_size;
+    return _HEAP_DATA(loc)->key == 0;
+}
+
 _RIBS_INLINE_ int heap_full(struct heap *h) {
     return h->num_items == h->max_size;
 }

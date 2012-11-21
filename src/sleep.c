@@ -18,14 +18,19 @@
     along with RIBS.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "ribs.h"
+
+#ifdef __APPLE__
+#include "apple.h"
+#else
 #include <sys/timerfd.h>
+#endif
 
 int ribs_sleep_init(void) {
     int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (0 > tfd)
         return LOGGER_PERROR("ribs_sleep_init: timerfd_create"), -1;
 
-    if (0 > ribs_epoll_add(tfd, EPOLLIN, current_ctx))
+    if (0 > ribs_epoll_add_fd(tfd, EPOLLIN, current_ctx))
         return close(tfd), -1;
     return tfd;
 }

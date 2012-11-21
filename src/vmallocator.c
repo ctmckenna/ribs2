@@ -5,6 +5,10 @@
 #include <fcntl.h>
 #include "logger.h"
 
+#ifdef __APPLE__
+#include "apple.h"
+#endif
+
 static inline int _resize_buf(struct vmallocator *v, size_t new_size) {
     void *mem = mremap(v->mem, v->capacity, new_size, MREMAP_MAYMOVE);
     if (MAP_FAILED == mem)

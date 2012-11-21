@@ -332,7 +332,7 @@ uint32_t hashtable_remove(struct hashtable *ht, const void *key, size_t key_len)
     return 0;
 }
 
-int hashtable_foreach(struct hashtable *ht, int (*func)(uint32_t rec)) {
+int hashtable_foreach(struct hashtable *ht, int (*func)(struct hashtable *ht, uint32_t rec, void *ptr), void *ptr) {
     uint32_t capacity = _HASHTABLE_HEADER()->mask + 1;
     uint32_t num_slots = ilog2(capacity) - HASHTABLE_INITIAL_SIZE_BITS + 1;
     uint32_t *slots = _HASHTABLE_SLOTS();
@@ -341,7 +341,7 @@ int hashtable_foreach(struct hashtable *ht, int (*func)(uint32_t rec)) {
     for (s = 0; s < num_slots; ++s) {
         struct ht_entry *hte = (struct ht_entry *)vmallocator_ofs2mem(&ht->data, slots[s]), *htend = hte + vect_size;
         for (; hte != htend; ++hte) {
-            if (0 < hte->rec && 0 > func(hte->rec))
+            if (0 < hte->rec && 0 > func(ht, hte->rec, ptr))
                 return -1;
         }
         if (s) vect_size <<= 1;

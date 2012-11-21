@@ -75,13 +75,13 @@ int http_file_server_list_dir(struct http_file_server *fs, const char *realname)
             if (t)
                 vmbuf_strftime(payload, "%F %T", t);
             vmbuf_strcpy(payload, "</td>");
-            vmbuf_sprintf(payload, "<td>%lu</td>", st.st_size);
+            vmbuf_sprintf(payload, "<td>%zd</td>", st.st_size);
             vmbuf_strcpy(payload, "</tr>");
         }
         closedir(d);
     }
     vmbuf_strcpy(payload, "<tr><td colspan=3><hr></td></tr></table>");
-    vmbuf_sprintf(payload, "<address>RIBS 2.0 Port %hu</address></body>", ctx->server->port);
+    vmbuf_sprintf(payload, "<address>RIBS 2.0 Port %hu</address></body>", ctx->server->tcp.port);
     vmbuf_strcpy(payload, "</html>");
     return http_server_response(HTTP_STATUS_200, HTTP_CONTENT_TYPE_TEXT_HTML), error;
 }
@@ -124,11 +124,11 @@ int http_file_server_run2(struct http_file_server *fs, struct http_headers *head
     char realname[PATH_MAX];
     char addr_str[INET_ADDRSTRLEN];
     if (NULL == realpath(vmbuf_data(&tmp), realname)) {
-        LOGGER_PERROR("[%s / %s] realpath (404): [%s]", _peer_addr_str(ctx->fd, addr_str), headers->x_forwarded_for, vmbuf_data(&tmp));
+        LOGGER_PERROR("[%s / %s] realpath (404): [%s]", _peer_addr_str(ctx->tcp_ctx->fd, addr_str), headers->x_forwarded_for, vmbuf_data(&tmp));
         return HTTP_FILE_SERVER_ERROR(404), -1;
     }
     if (0 != strncmp(realname, fs->base_dir, fs->base_dir_len)) {
-        LOGGER_ERROR("[%s / %s] rejecting (403): [%s]",  _peer_addr_str(ctx->fd, addr_str), headers->x_forwarded_for, realname);
+        LOGGER_ERROR("[%s / %s] rejecting (403): [%s]",  _peer_addr_str(ctx->tcp_ctx->fd, addr_str), headers->x_forwarded_for, realname);
         return HTTP_FILE_SERVER_ERROR(403), -1;
     }
     int ffd;
@@ -206,7 +206,7 @@ int http_file_server_run2(struct http_file_server *fs, struct http_headers *head
     gmtime_r(&orig_st.st_mtime, &tm);
     char etag[128];
     int n = strftime(etag, sizeof(etag), "\r\nETag: \"%d%m%Y%H%M%S", &tm);
-    if (0 == n || (int)sizeof(etag) - n <= snprintf(etag + n, sizeof(etag) - n, "%zu\"", st.st_size))
+    if (0 == n || (int)sizeof(etag) - n <= snprintf(etag + n, sizeof(etag) - n, "%zd\"", st.st_size))
         return HTTP_FILE_SERVER_ERROR(500), close(ffd), -1;
     int include_payload;
     if (0 == strcmp(headers->if_none_match, etag + 8))

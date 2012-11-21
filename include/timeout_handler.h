@@ -25,15 +25,20 @@
 #include "list.h"
 #include "epoll_worker.h"
 #include <sys/time.h>
-#include <sys/timerfd.h>
 #include <stdio.h>
 #include "logger.h"
+
+#ifdef __APPLE__
+#include "apple.h"
+#else
+#include <sys/timerfd.h>
+#endif
 
 struct timeout_handler {
     int fd;
     struct ribs_context *timeout_handler_ctx;
     struct list timeout_chain;
-    time_t timeout;
+    time_t timeout; //milliseconds
 };
 
 int timeout_handler_init(struct timeout_handler *timeout_handler);

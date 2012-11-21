@@ -23,6 +23,9 @@
 #include "ribs_defs.h"
 #include <stdarg.h>
 #include <time.h>
+#ifdef __APPLE__
+#include "apple.h"
+#endif
 
 struct memalloc_block {
     struct memalloc_block *next;

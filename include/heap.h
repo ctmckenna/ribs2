@@ -79,6 +79,7 @@ _RIBS_INLINE_ int heap_empty(struct heap *h);
 uint32_t heap_insert(struct heap *h, void *user_data);
 _RIBS_INLINE_ void heap_build(struct heap *h);
 _RIBS_INLINE_ void heap_remove_top(struct heap *h);
+_RIBS_INLINE_ int heap_is_top(struct heap *h, uint32_t loc);
 
 #include "../src/_heap.c"
 

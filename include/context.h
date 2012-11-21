@@ -22,7 +22,12 @@
 
 #include "ribs_defs.h"
 #include "memalloc.h"
+
+#ifdef __APPLE__
+#include "apple.h"
+#else
 #include <sys/epoll.h>
+#endif
 
 #define SMALL_STACK_SIZE 4096
 

@@ -24,6 +24,9 @@
 #include "logger.h"
 #include "vm_misc.h"
 #include <sys/mman.h>
+#ifdef __APPLE__
+#include "apple.h"
+#endif
 
 int file_mapper_init(struct file_mapper *fm, const char *filename) {
     return file_mapper_init2(fm, filename, 0, O_RDONLY | O_CLOEXEC, PROT_READ, MAP_SHARED);

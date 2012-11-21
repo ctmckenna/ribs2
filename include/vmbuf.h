@@ -29,6 +29,9 @@
 #include <string.h>
 #include <time.h>
 #include "vm_misc.h"
+#ifdef __APPLE__
+#include "apple.h"
+#endif
 #ifdef VMBUF_T
 #undef VMBUF_T
 #endif

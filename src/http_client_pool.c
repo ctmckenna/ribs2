@@ -26,6 +26,7 @@
 #include "hashtable.h"
 #include "sstr.h"
 #include "list.h"
+#include <netdb.h>
 
 #define CLIENT_STACK_SIZE 65536
 
@@ -279,7 +280,7 @@ struct http_client_context *http_client_pool_create_client(struct http_client_po
         struct sockaddr_in saddr = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr = addr };
         if (0 > connect(cfd, (struct sockaddr *)&saddr, sizeof(saddr)) && EINPROGRESS != errno)
             return LOGGER_PERROR("connect"), close(cfd), NULL;
-        if (0 > ribs_epoll_add(cfd, EPOLLIN | EPOLLOUT | EPOLLET, event_loop_ctx))
+        if (0 > ribs_epoll_add_fd(cfd, EPOLLIN | EPOLLOUT | EPOLLET, event_loop_ctx))
             return close(cfd), NULL;
     }
     struct ribs_context *new_ctx = ctx_pool_get(&http_client_pool->ctx_pool);
@@ -341,5 +342,13 @@ int http_client_pool_post_request_send(struct http_client_context *context, stru
         http_client_free(context);
         return -1;
     }
+    return 0;
+}
+
+int http_client_host_to_addr(const char *hostname, struct in_addr *addr) {
+    struct hostent *ent = gethostbyname(hostname);
+    if (ent == NULL)
+        return -1;
+    *addr =  *(struct in_addr *)ent->h_addr_list[0];
     return 0;
 }

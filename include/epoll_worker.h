@@ -30,6 +30,7 @@ struct epoll_worker_fd_data {
     struct ribs_context *ctx;
     struct list timeout_chain;
     struct timeval timestamp;
+    void *conn_data;
 };
 
 extern struct epoll_worker_fd_data *epoll_worker_fd_map;
@@ -39,15 +40,22 @@ void epoll_worker_loop(void);
 void epoll_worker_exit(void);
 void yield(void);
 void courtesy_yield(void);
-int ribs_epoll_add(int fd, uint32_t events, struct ribs_context* ctx);
+int ribs_epoll_add_fd(int fd, uint32_t events, struct ribs_context* ctx);
+int ribs_epoll_add_signal(int sfd, uint32_t events, struct ribs_context *ctx);
+int ribs_epoll_add_timer(int tfd, uint32_t events, struct ribs_context *ctx);
+int ribs_epoll_mod_fd(int fd, uint32_t events);
 struct ribs_context* small_ctx_for_fd(int fd, size_t reserved_size, void (*func)(void));
 int queue_current_ctx(void);
+struct ribs_context* small_ctx_for_signal(int sfd, size_t reserved_size, void (*func)(void));
+struct ribs_context* small_ctx_for_timer(int tfd, size_t reserved_size, void (*func)(void));
 
 _RIBS_INLINE_ void epoll_worker_ignore_events(int fd);
 _RIBS_INLINE_ void epoll_worker_resume_events(int fd);
 _RIBS_INLINE_ struct ribs_context *epoll_worker_get_last_context(void);
 _RIBS_INLINE_ void epoll_worker_set_fd_ctx(int fd, struct ribs_context* ctx);
 _RIBS_INLINE_ void epoll_worker_set_last_fd(int fd);
+_RIBS_INLINE_ uint32_t epoll_worker_last_events();
+_RIBS_INLINE_ struct ribs_context *epoll_worker_get_ctx(int fd);
 
 #include "../src/_epoll_worker.c"
 

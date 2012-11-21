@@ -28,9 +28,10 @@
 #include "hashtable.h"
 #include "uri_decode.h"
 #include "http_headers.h"
+#include "tcp_server.h"
 
 struct http_server_context {
-    int fd;
+    struct tcp_server_context *tcp_ctx;
     struct http_server *server;
     struct vmbuf request;
     struct vmbuf header;
@@ -45,24 +46,18 @@ struct http_server_context {
 };
 
 struct http_server {
-    int fd;
-    uint16_t port;
-    struct ctx_pool ctx_pool;
+    struct tcp_server tcp;
     void (*user_func)(void);
     /* misc ctx */
-    struct ribs_context *accept_ctx;
-    struct ribs_context *idle_ctx;
-    struct timeout_handler timeout_handler;
-    size_t stack_size; /* set to zero for auto */
-    size_t num_stacks; /* set to zero for auto */
     size_t init_request_size;
     size_t init_header_size;
     size_t init_payload_size;
     size_t max_req_size;
     size_t context_size;
+    struct websocket_server *websocket;
 };
 
-#define HTTP_SERVER_INIT_DEFAULTS .stack_size = 0, .num_stacks = 0, .init_request_size = 8*1024, .init_header_size = 8*1024, .init_payload_size = 8*1024, .max_req_size = 0, .context_size = 0, .timeout_handler.timeout = 60000
+#define HTTP_SERVER_INIT_DEFAULTS .tcp = TCP_SERVER_INITIALIZER, .init_request_size = 8*1024, .init_header_size = 8*1024, .init_payload_size = 8*1024, .max_req_size = 1024*1024*1024, .context_size = 0, .websocket = NULL
 #define HTTP_SERVER_INITIALIZER { HTTP_SERVER_INIT_DEFAULTS }
 
 #define HTTP_SERVER_NOT_FOUND (-2)
@@ -85,12 +80,13 @@ int http_server_sendfile2(const char *filename, const char *additional_headers, 
 int http_server_sendfile_payload(int ffd, off_t size);
 int http_server_generate_dir_list(const char *filename);
 void http_server_close(struct http_server *server);
+void http_server_handle_websocket();
 
 /*
  * inline
  */
 static inline struct http_server_context *http_server_get_context(void) {
-    return (struct http_server_context *)(current_ctx->reserved);
+    return (struct http_server_context *)(tcp_server_get_context()->user_data);
 }
 
 static inline void *http_server_get_app_context(struct http_server_context *http_server_ctx) {

@@ -53,6 +53,9 @@
 #define SSTRCMPI(var, with) \
     (strncasecmp(var, with, sizeof(var)))
 
+#define IS_SSTR_EQ(var, with, with_len) \
+    (SSTRLEN(var) == with_len && 0 == SSTRNCMP(var, with))
+
 #endif // _SSTR__H_
 
 

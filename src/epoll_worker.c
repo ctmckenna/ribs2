@@ -18,19 +18,25 @@
     along with RIBS.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "epoll_worker.h"
-#include <sys/epoll.h>
 #include <stdio.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <stdlib.h>
 #include <signal.h>
-#include <sys/signalfd.h>
 #include "logger.h"
 #include <fcntl.h>
 #include <errno.h>
 
+#ifdef __APPLE__
+#include "apple.h"
+#else
+#include <sys/epoll.h>
+#include <sys/signalfd.h>
+#endif
+
 static int ribs_epoll_fd = -1;
 struct epoll_event last_epollev;
+
 struct epoll_worker_fd_data *epoll_worker_fd_map;
 
 static struct ribs_context main_ctx = { .memalloc = MEMALLOC_INITIALIZER };
@@ -64,7 +70,7 @@ static void pipe_to_context(void) {
     }
 }
 
-int ribs_epoll_add(int fd, uint32_t events, struct ribs_context* ctx) {
+int ribs_epoll_add_fd(int fd, uint32_t events, struct ribs_context* ctx) {
     struct epoll_event ev = { .events = events, .data.fd = fd };
     if (0 > epoll_ctl(ribs_epoll_fd, EPOLL_CTL_ADD, fd, &ev))
         return LOGGER_PERROR("epoll_ctl"), -1;
@@ -72,17 +78,58 @@ int ribs_epoll_add(int fd, uint32_t events, struct ribs_context* ctx) {
     return 0;
 }
 
+/*int ribs_epoll_mod(int fd, uint32_t events) {
+
+  }*/
+
+int ribs_epoll_add_signal(int sfd, uint32_t events, struct ribs_context *ctx) {
+    #ifdef __APPLE__
+    events = (events & ~EPOLLIN) | SIGNALFD;
+    #endif
+    return ribs_epoll_add_fd(sfd, events, ctx);
+}
+
+int ribs_epoll_add_timer(int tfd, uint32_t events, struct ribs_context *ctx) {
+    #ifdef __APPLE__
+    /* timer added to event queue when armed */
+    (void)tfd; (void)events; //assuming events is EPOLLIN since we can't write to a timer
+    epoll_worker_set_fd_ctx(tfd, ctx);
+    return 0;
+    #else
+    return ribs_epoll_add_fd(tfd, events, ctx);
+    #endif
+}
+
 struct ribs_context* small_ctx_for_fd(int fd, size_t reserved_size, void (*func)(void)) {
     void *ctx=ribs_context_create(SMALL_STACK_SIZE, reserved_size, func);
     if (NULL == ctx)
         return LOGGER_PERROR("ribs_context_create"), NULL;
-    if (0 > ribs_epoll_add(fd, EPOLLIN, ctx))
+    if (0 > ribs_epoll_add_fd(fd, EPOLLIN, ctx))
         return NULL;
     return ctx;
 }
 
 static void event_loop(void) {
     for (;;yield());
+}
+
+/* kqueue needs to know if fd is a signal */
+struct ribs_context* small_ctx_for_signal(int sfd, size_t reserved_size, void (*func)(void)) {
+    void *ctx=ribs_context_create(SMALL_STACK_SIZE, reserved_size, func);
+    if (NULL == ctx)
+        return LOGGER_PERROR("ribs_context_create"), NULL;
+    if (0 > ribs_epoll_add_signal(sfd, EPOLLIN, ctx))
+        return NULL;
+    return ctx;
+}
+
+struct ribs_context* small_ctx_for_timer(int tfd, size_t reserved_size, void (*func)(void)) {
+    void *ctx = ribs_context_create(SMALL_STACK_SIZE, reserved_size, func);
+    if (NULL == ctx)
+        return LOGGER_PERROR("ribs_context_create"), NULL;
+    if (0 > ribs_epoll_add_timer(tfd, EPOLLIN, ctx))
+        return NULL;
+    return ctx;
 }
 
 int epoll_worker_init(void) {
@@ -112,20 +159,19 @@ int epoll_worker_init(void) {
     int sfd = signalfd(-1, &set, SFD_NONBLOCK);
     if (0 > sfd)
         return LOGGER_PERROR("signalfd"), -1;
-    if (NULL == small_ctx_for_fd(sfd, sigrtmin_to_context))
+    if (NULL == small_ctx_for_signal(sfd, sigrtmin_to_context))
         return -1;
 #endif
 
     event_loop_ctx = ribs_context_create(SMALL_STACK_SIZE, 0, event_loop);
-
-    /* pipe to conetxt */
+    /* pipe to context */
     int pipefd[2];
     if (0 > pipe2(pipefd, O_NONBLOCK))
         return LOGGER_PERROR("pipe"), -1;
     if (NULL == small_ctx_for_fd(pipefd[0], 0, pipe_to_context))
         return -1;
     queue_ctx_fd = pipefd[1];
-    return ribs_epoll_add(queue_ctx_fd, EPOLLOUT | EPOLLET | EPOLLRDHUP, event_loop_ctx);
+    return ribs_epoll_add_fd(queue_ctx_fd, EPOLLOUT | EPOLLET | EPOLLRDHUP, event_loop_ctx);
 }
 
 void epoll_worker_loop(void) {
@@ -136,9 +182,16 @@ void epoll_worker_exit(void) {
     ribs_swapcurcontext(&main_ctx);
 }
 
-inline void yield(void) {
-    while(0 >= epoll_wait(ribs_epoll_fd, &last_epollev, 1, -1));
-    ribs_swapcurcontext(epoll_worker_get_last_context());
+int ribs_epoll_mod_fd(int fd, uint32_t events) {
+    struct epoll_event ev = { .events = events, .data.fd = fd };
+    if (0 > epoll_ctl(ribs_epoll_fd, EPOLL_CTL_MOD, fd, &ev))
+        return LOGGER_PERROR("epoll_ctl"), -1;
+    return 0;
+}
+
+void yield() {
+  while(0 >= epoll_wait(ribs_epoll_fd, &last_epollev, 1, -1));
+  ribs_swapcurcontext(epoll_worker_get_last_context());
 }
 
 int queue_current_ctx(void) {
@@ -158,7 +211,7 @@ int queue_current_ctx(void) {
     return 0;
 }
 
-inline void courtesy_yield(void) {
+void courtesy_yield(void) {
     if (0 == epoll_wait(ribs_epoll_fd, &last_epollev, 1, 0))
         return;
     // save since queue_current_ctx() will override if queue if full;

@@ -66,7 +66,7 @@ uint32_t hashtable_insert_alloc(struct hashtable *ht, const void *key, size_t ke
 uint32_t hashtable_lookup_insert(struct hashtable *ht, const void *key, size_t key_len, const void *val, size_t val_len);
 uint32_t hashtable_lookup(struct hashtable *ht, const void *key, size_t key_len);
 uint32_t hashtable_remove(struct hashtable *ht, const void *key, size_t key_len);
-int hashtable_foreach(struct hashtable *ht, int (*func)(uint32_t rec));
+int hashtable_foreach(struct hashtable *ht, int (*func)(struct hashtable *ht, uint32_t rec, void *ptr), void *ptr);
 static inline void *hashtable_get_key(struct hashtable *ht, uint32_t rec_ofs);
 static inline uint32_t hashtable_get_key_size(struct hashtable *ht, uint32_t rec_ofs);
 static inline void *hashtable_get_val(struct hashtable *ht, uint32_t rec_ofs);

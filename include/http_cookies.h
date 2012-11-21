@@ -23,6 +23,6 @@
 #include "ribs_defs.h"
 #include "hashtable.h"
 
-int http_parse_cookies(struct hashtable *ht, char *cookies_str);
+int http_cookies_parse(char *cookies_str, struct hashtable *ht);
 
 #endif // _HTTP_COOKIES__H_

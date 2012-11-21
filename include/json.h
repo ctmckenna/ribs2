@@ -34,10 +34,11 @@ struct json
 {
     int level;
     char *cur;
-    char *err;
+    const char *err;
     struct json_stack_item last_string;
     struct json_stack_item last_key;
     struct vmbuf stack;
+    struct vmbuf cb_stack;
 
     void (*callback_string)     (struct json *json, char *kb, char *ke, char *vb, char *ve);
     void (*callback_primitive)  (struct json *json, char *kb, char *ke, char *vb, char *ve);
@@ -45,9 +46,15 @@ struct json
     void (*callback_block_end)  (struct json *json, char *kb, char *ke);
 };
 
+#define JSON_INIT_DEFAULTS .err = NULL, .stack = VMBUF_INITIALIZER, .cb_stack = VMBUF_INITIALIZER
+#define JSON_INITIALIZER { JSON_INIT_DEFAULTS }
+
 void json_stack_item_set(struct json_stack_item *si, char *b, char *e);
 void json_stack_item_reset(struct json_stack_item *si);
 int  json_stack_item_isset(struct json_stack_item *si);
+void json_push_callbacks(struct json *js);
+void json_pop_callbacks(struct json *js);
+void json_null_obj_parse(struct json *js);
 
 void json_reset_callbacks(struct json *js);
 int  json_init(struct json *js);

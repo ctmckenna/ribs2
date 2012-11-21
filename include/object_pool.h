@@ -59,7 +59,7 @@ _RIBS_INLINE_ void *object_pool_get(struct object_pool *op) {
 _RIBS_INLINE_ void object_pool_put(struct object_pool *op, void *mem) {
     *(uintptr_t *)vmbuf_rloc(&op->pool) = (uintptr_t)mem;
     vmbuf_rseek(&op->pool, sizeof(uintptr_t));
-    return ;
+    return;
 }
 
 _RIBS_INLINE_ int object_pool_init(struct object_pool *op) {

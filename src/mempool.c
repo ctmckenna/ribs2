@@ -19,9 +19,17 @@
 */
 #include "mempool.h"
 #include "ilog2.h"
+#ifdef __APPLE__
+#include "apple.h"
+#else
 #include <sys/mman.h>
+#endif
 #include <time.h>
 #include "logger.h"
+
+#ifdef __APPLE__
+#include "apple.h"
+#endif
 
 #define MIN_CHUNK_SIZE_BITS (12)
 #define MIN_CHUNK_SIZE (1U << MIN_CHUNK_SIZE_BITS)

@@ -43,7 +43,7 @@ int heap_init(struct heap *h, size_t initial_size, size_t el_size, int (*compar)
         ofs[i] = i;
         _HEAP_DATA(i)->key = -1;
     }
-    return -1;
+    return 0;
 }
 
 void heap_free(struct heap *h) {
@@ -85,7 +85,7 @@ uint32_t heap_insert(struct heap *h, void *user_data) {
     uint32_t loc = ofs[pos];
     struct _heap_entry *d = _HEAP_DATA(loc);
     d->key = pos;
-    memcpy(d->user_data, user_data, h->el_size);
+    memcpy(d->user_data, user_data, h->el_size - sizeof(*d));
     ++h->num_items;
     return loc;
 }

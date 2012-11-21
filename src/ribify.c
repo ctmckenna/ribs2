@@ -25,10 +25,15 @@
 #include <stdarg.h>
 #include <sys/uio.h>
 #include <netdb.h>
-#include <sys/eventfd.h>
 #include <signal.h>
+
+#ifdef __APPLE__
+#include "apple.h"
+#else
+#include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <sys/sendfile.h>
+#endif
 
 int _ribified_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     int flags=fcntl(sockfd, F_GETFL);
@@ -39,7 +44,7 @@ int _ribified_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen
     if (res < 0 && errno != EINPROGRESS) {
         return res;
     }
-    return ribs_epoll_add(sockfd, EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP, event_loop_ctx);
+    return ribs_epoll_add_fd(sockfd, EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP, event_loop_ctx);
 }
 
 int _ribified_fcntl(int fd, int cmd, ...) {
@@ -149,8 +154,8 @@ int _ribified_pipe2(int pipefd[2], int flags) {
     if (0 > pipe2(pipefd, flags | O_NONBLOCK))
         return -1;
 
-    if (0 == ribs_epoll_add(pipefd[0], EPOLLIN | EPOLLET | EPOLLRDHUP, event_loop_ctx) &&
-        0 == ribs_epoll_add(pipefd[1], EPOLLOUT | EPOLLET | EPOLLRDHUP, event_loop_ctx))
+    if (0 == ribs_epoll_add_fd(pipefd[0], EPOLLIN | EPOLLET | EPOLLRDHUP, event_loop_ctx) &&
+        0 == ribs_epoll_add_fd(pipefd[1], EPOLLOUT | EPOLLET | EPOLLRDHUP, event_loop_ctx))
         return 0;
 
     int my_error = errno;
@@ -220,13 +225,13 @@ char *_ribified_strdup(const char *s) {
     return mem;
 }
 
-
+#ifndef __APPLE__
 void *ribify_malloc(size_t size) __attribute__ ((weak, alias("_ribified_malloc")));
 void ribify_free(void *ptr) __attribute__ ((weak, alias("_ribified_free")));
 void *ribify_calloc(size_t nmemb, size_t size) __attribute__ ((weak, alias("_ribified_calloc")));
 void *ribify_realloc(void *ptr, size_t size) __attribute__ ((weak, alias("_ribified_realloc")));
 char *ribify_strdup(const char *s) __attribute__ ((weak, alias("_ribified_strdup")));
-
+#endif //__APPLE__
 
 
 #ifdef UGLY_GETADDRINFO_WORKAROUND
